@@ -42,14 +42,24 @@ class Optimizer(object):
     def get_lr(self):
         if self.it <= self.warmup_steps:
             lr = self.warmup_start_lr*(self.warmup_factor**self.it)
+        elif self.it >= self.max_iter:
+            # If we're beyond max_iter, use a small fixed learning rate
+            lr = self.lr0 * 1e-4  # Very small lr for extra training epochs
         else:
-            factor = (1-(self.it-self.warmup_steps)/(self.max_iter-self.warmup_steps))**self.power
+            # For normal training phase
+            factor_base = max(0, 1-(self.it-self.warmup_steps)/(self.max_iter-self.warmup_steps))
+            factor = factor_base**self.power
             lr = self.lr0 * factor
         return lr
 
 
     def step(self):
         self.lr = self.get_lr()
+        # Check if lr is a valid number (not complex, NaN or inf)
+        if not isinstance(self.lr, float) or torch.isnan(torch.tensor(self.lr)) or torch.isinf(torch.tensor(self.lr)):
+            logger.warning(f"Invalid learning rate calculated: {self.lr}, using minimum value instead")
+            self.lr = 1e-8  # Set to a small positive value as fallback
+            
         for pg in self.optim.param_groups:
             if pg.get('lr_mul', False):
                 pg['lr'] = self.lr * 10

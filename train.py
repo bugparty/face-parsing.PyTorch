@@ -7,8 +7,7 @@ from face_dataset import FaceMask
 from loss import OhemCELoss
 from evaluate import evaluate
 from optimizer import Optimizer
-import cv2
-import numpy as np
+
 
 import torch
 import torch.nn as nn
@@ -25,31 +24,38 @@ import argparse
 
 
 respth = './res'
-if not osp.exists(respth):
-    os.makedirs(respth)
+os.makedirs(respth, exist_ok=True)
 logger = logging.getLogger()
 
 
 def parse_args():
     parse = argparse.ArgumentParser()
     parse.add_argument(
-            '--local_rank',
-            dest = 'local_rank',
-            type = int,
-            default = -1,
+            '--local_rank', '--local-rank',
+            dest='local_rank',
+            type=int,
+            default=-1,
             )
     return parse.parse_args()
 
 
 def train():
     args = parse_args()
-    torch.cuda.set_device(args.local_rank)
-    dist.init_process_group(
-                backend = 'nccl',
-                init_method = 'tcp://127.0.0.1:33241',
-                world_size = torch.cuda.device_count(),
-                rank=args.local_rank
-                )
+    
+    # 如果 local_rank == -1，说明是单卡模式；否则为分布式多卡模式
+    single_gpu = (args.local_rank == -1)
+    if single_gpu:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(
+            backend='nccl',
+            init_method='tcp://127.0.0.1:33241',
+            world_size=torch.cuda.device_count(),
+            rank=args.local_rank
+        )
+        device = torch.device('cuda', args.local_rank)
+
     setup_logger(respth)
 
     # dataset
@@ -57,29 +63,38 @@ def train():
     n_img_per_gpu = 16
     n_workers = 8
     cropsize = [448, 448]
-    data_root = '/home/zll/data/CelebAMask-HQ/'
+    data_root = '/home/bowman/data/CelebAMask-HQ/'
 
     ds = FaceMask(data_root, cropsize=cropsize, mode='train')
-    sampler = torch.utils.data.distributed.DistributedSampler(ds)
-    dl = DataLoader(ds,
-                    batch_size = n_img_per_gpu,
-                    shuffle = False,
-                    sampler = sampler,
-                    num_workers = n_workers,
-                    pin_memory = True,
-                    drop_last = True)
+    if single_gpu:
+        dl = DataLoader(ds,
+                        batch_size=n_img_per_gpu,
+                        shuffle=True,
+                        num_workers=n_workers,
+                        pin_memory=True,
+                        drop_last=True)
+    else:
+        sampler = torch.utils.data.distributed.DistributedSampler(ds)
+        dl = DataLoader(ds,
+                        batch_size=n_img_per_gpu,
+                        shuffle=False,
+                        sampler=sampler,
+                        num_workers=n_workers,
+                        pin_memory=True,
+                        drop_last=True)
 
     # model
-    ignore_idx = -100
-    net = BiSeNet(n_classes=n_classes)
-    net.cuda()
+    net = BiSeNet(n_classes=n_classes).to(device)
     net.train()
-    net = nn.parallel.DistributedDataParallel(net,
-            device_ids = [args.local_rank, ],
-            output_device = args.local_rank
-            )
+    if not single_gpu:
+        net = nn.parallel.DistributedDataParallel(
+            net, device_ids=[args.local_rank], output_device=args.local_rank
+        )
     score_thres = 0.7
     n_min = n_img_per_gpu * cropsize[0] * cropsize[1]//16
+    # define ignore label index for loss functions
+    ignore_idx = 255
+
     LossP = OhemCELoss(thresh=score_thres, n_min=n_min, ignore_lb=ignore_idx)
     Loss2 = OhemCELoss(thresh=score_thres, n_min=n_min, ignore_lb=ignore_idx)
     Loss3 = OhemCELoss(thresh=score_thres, n_min=n_min, ignore_lb=ignore_idx)
@@ -93,7 +108,7 @@ def train():
     warmup_steps = 1000
     warmup_start_lr = 1e-5
     optim = Optimizer(
-            model = net.module,
+            model = net.module if hasattr(net, 'module') else net,
             lr0 = lr_start,
             momentum = momentum,
             wd = weight_decay,
@@ -118,8 +133,7 @@ def train():
             sampler.set_epoch(epoch)
             diter = iter(dl)
             im, lb = next(diter)
-        im = im.cuda()
-        lb = lb.cuda()
+        im, lb = im.to(device), lb.to(device)
         H, W = im.size()[2:]
         lb = torch.squeeze(lb, 1)
 
@@ -159,20 +173,18 @@ def train():
             logger.info(msg)
             loss_avg = []
             st = ed
-        if dist.get_rank() == 0:
+        # 只有 rank 0（或单卡）才保存和评估
+        if single_gpu or dist.get_rank() == 0:
             if (it+1) % 5000 == 0:
                 state = net.module.state_dict() if hasattr(net, 'module') else net.state_dict()
                 if dist.get_rank() == 0:
                     torch.save(state, './res/cp/{}_iter.pth'.format(it))
                 evaluate(dspth='/home/zll/data/CelebAMask-HQ/test-img', cp='{}_iter.pth'.format(it))
 
-    #  dump the final model
-    save_pth = osp.join(respth, 'model_final_diss.pth')
-    # net.cpu()
-    state = net.module.state_dict() if hasattr(net, 'module') else net.state_dict()
-    if dist.get_rank() == 0:
-        torch.save(state, save_pth)
-    logger.info('training done, model saved to: {}'.format(save_pth))
+    # 结束后单卡或 rank 0 保存最终模型
+    if single_gpu or dist.get_rank() == 0:
+        torch.save(net.state_dict(), osp.join(respth, 'model_final.pth'))
+        logger.info('training done, model saved.')
 
 
 if __name__ == "__main__":

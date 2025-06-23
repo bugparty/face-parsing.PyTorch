@@ -24,7 +24,23 @@ class FaceMask(Dataset):
         self.ignore_lb = 255
         self.rootpth = rootpth
 
-        self.imgs = os.listdir(os.path.join(self.rootpth, 'CelebA-HQ-img'))
+        # 获取图片列表
+        img_dir = os.path.join(self.rootpth, 'CelebA-HQ-img')
+        mask_dir = os.path.join(self.rootpth, 'mask')
+        print(f"图像目录: {img_dir}")
+        print(f"掩码目录: {mask_dir}")
+        
+        # 仅获取两个目录中都存在的文件
+        all_imgs = os.listdir(img_dir)
+        valid_imgs = []
+        
+        for img in all_imgs:
+            mask_name = img[:-3] + 'png'
+            if os.path.exists(os.path.join(mask_dir, mask_name)):
+                valid_imgs.append(img)
+        
+        self.imgs = valid_imgs
+        print(f"总图像数: {len(all_imgs)}, 有效图像数: {len(valid_imgs)}")
 
         #  pre-processing
         self.to_tensor = transforms.Compose([
@@ -42,18 +58,38 @@ class FaceMask(Dataset):
             ])
 
     def __getitem__(self, idx):
-        impth = self.imgs[idx]
-        img = Image.open(osp.join(self.rootpth, 'CelebA-HQ-img', impth))
-        img = img.resize((512, 512), Image.BILINEAR)
-        label = Image.open(osp.join(self.rootpth, 'mask', impth[:-3]+'png')).convert('P')
-        # print(np.unique(np.array(label)))
-        if self.mode == 'train':
-            im_lb = dict(im=img, lb=label)
-            im_lb = self.trans_train(im_lb)
-            img, label = im_lb['im'], im_lb['lb']
-        img = self.to_tensor(img)
-        label = np.array(label).astype(np.int64)[np.newaxis, :]
-        return img, label
+        try:
+            impth = self.imgs[idx]
+            img_path = osp.join(self.rootpth, 'CelebA-HQ-img', impth)
+            mask_path = osp.join(self.rootpth, 'mask', impth[:-3]+'png')
+            
+            # 检查文件是否存在
+            if not osp.exists(img_path):
+                print(f"警告: 图像文件不存在: {img_path}, 跳过索引 {idx}")
+                # 递归尝试下一个
+                return self.__getitem__((idx + 1) % len(self))
+                
+            if not osp.exists(mask_path):
+                print(f"警告: 掩码文件不存在: {mask_path}, 跳过索引 {idx}")
+                # 递归尝试下一个
+                return self.__getitem__((idx + 1) % len(self))
+            
+            img = Image.open(img_path)
+            img = img.resize((512, 512), Image.BILINEAR)
+            label = Image.open(mask_path).convert('P')
+            
+            if self.mode == 'train':
+                im_lb = dict(im=img, lb=label)
+                im_lb = self.trans_train(im_lb)
+                img, label = im_lb['im'], im_lb['lb']
+            img = self.to_tensor(img)
+            label = np.array(label).astype(np.int64)[np.newaxis, :]
+            return img, label
+            
+        except Exception as e:
+            print(f"加载图片出错 ({idx}): {e}")
+            # 递归尝试下一个索引
+            return self.__getitem__((idx + 1) % len(self))
 
     def __len__(self):
         return len(self.imgs)

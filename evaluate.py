@@ -54,10 +54,28 @@ def vis_parsing_maps(im, parsing_anno, stride, save_im=False, save_path='vis_res
     if save_im:
         cv2.imwrite(save_path, vis_im, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
 
-    # return vis_im
+def process_state_dict(state_dict):
+    """Process the state dict to remove '_orig_mod.' prefix if it exists."""
+    new_state_dict = {}
+    orig_prefix = '_orig_mod.'
+    
+    # Check if this is a compiled model state dict (has _orig_mod. prefix)
+    has_orig_prefix = any(k.startswith(orig_prefix) for k in state_dict.keys())
+    
+    if has_orig_prefix:
+        # Remove the prefix from all keys
+        for k, v in state_dict.items():
+            if k.startswith(orig_prefix):
+                new_key = k[len(orig_prefix):]
+                new_state_dict[new_key] = v
+            else:
+                new_state_dict[k] = v
+        return new_state_dict
+    else:
+        # No prefixes to process
+        return state_dict
 
 def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth'):
-
     if not os.path.exists(respth):
         os.makedirs(respth)
 
@@ -65,7 +83,20 @@ def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth')
     net = BiSeNet(n_classes=n_classes)
     net.cuda()
     save_pth = osp.join('res/cp', cp)
-    net.load_state_dict(torch.load(save_pth))
+    
+    # Load and process state dict
+    checkpoint = torch.load(save_pth)
+    
+    # Check if it's the new format (dict with 'model' key)
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        # Process the model state dict to remove _orig_mod prefixes if they exist
+        model_state_dict = process_state_dict(checkpoint['model'])
+        net.load_state_dict(model_state_dict)
+    else:
+        # For old format (direct model weights), also check for _orig_mod prefixes
+        model_state_dict = process_state_dict(checkpoint)
+        net.load_state_dict(model_state_dict)
+    
     net.eval()
 
     to_tensor = transforms.Compose([
