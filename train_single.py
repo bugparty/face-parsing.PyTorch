@@ -48,7 +48,7 @@ warmup_steps = 1000
 warmup_start_lr = 1e-5
 
 # Data root
-data_root = '/home/bowman/data/CelebAMask-HQ/'
+data_root = './data/CelebAMask-HQ/'
 
 # Device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -168,7 +168,7 @@ def train():
             torch.save({'model': net.state_dict(), 'optim': optim.optim.state_dict(), 'it': it}, ckpt_path)
             print(f'Saved checkpoint to {ckpt_path}')
             # Evaluate
-            evaluate(dspth='/home/bowman/data/CelebAMask-HQ/test-img', cp=f'{it}_iter.pth')
+            evaluate(dspth='~/data/CelebAMask-HQ/test-img', cp=f'{it}_iter.pth')
 
     # Final save
     final_path = osp.join(respth, 'model_final.pth')

@@ -63,7 +63,7 @@ def train():
     n_img_per_gpu = 16
     n_workers = 8
     cropsize = [448, 448]
-    data_root = '/home/bowman/data/CelebAMask-HQ/'
+    data_root = './data/CelebAMask-HQ/'
 
     ds = FaceMask(data_root, cropsize=cropsize, mode='train')
     if single_gpu:
@@ -179,7 +179,7 @@ def train():
                 state = net.module.state_dict() if hasattr(net, 'module') else net.state_dict()
                 if dist.get_rank() == 0:
                     torch.save(state, './res/cp/{}_iter.pth'.format(it))
-                evaluate(dspth='/home/zll/data/CelebAMask-HQ/test-img', cp='{}_iter.pth'.format(it))
+                evaluate(dspth=data_root+'/test-img', cp='{}_iter.pth'.format(it))
 
     # 结束后单卡或 rank 0 保存最终模型
     if single_gpu or dist.get_rank() == 0:
