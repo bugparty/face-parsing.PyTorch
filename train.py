@@ -42,19 +42,16 @@ def parse_args():
 def train():
     args = parse_args()
     
-    # 如果 local_rank == -1，说明是单卡模式；否则为分布式多卡模式
-    single_gpu = (args.local_rank == -1)
-    if single_gpu:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(
-            backend='nccl',
-            init_method='tcp://127.0.0.1:33241',
-            world_size=torch.cuda.device_count(),
-            rank=args.local_rank
-        )
-        device = torch.device('cuda', args.local_rank)
+    # 如果 local_rank == -1，说明是单卡模式；否则为分布式多卡模式、
+    print('local_rank:', args.local_rank)
+    torch.cuda.set_device(args.local_rank)
+    torch.distributed.init_process_group(
+        backend='nccl',
+        init_method='tcp://127.0.0.1:33241',
+        world_size=torch.cuda.device_count(),
+        rank=args.local_rank
+    )
+    device = torch.device('cuda', args.local_rank)
 
     setup_logger(respth)
 
@@ -66,30 +63,22 @@ def train():
     data_root = './data/CelebAMask-HQ/'
 
     ds = FaceMask(data_root, cropsize=cropsize, mode='train')
-    if single_gpu:
-        dl = DataLoader(ds,
-                        batch_size=n_img_per_gpu,
-                        shuffle=True,
-                        num_workers=n_workers,
-                        pin_memory=True,
-                        drop_last=True)
-    else:
-        sampler = torch.utils.data.distributed.DistributedSampler(ds)
-        dl = DataLoader(ds,
-                        batch_size=n_img_per_gpu,
-                        shuffle=False,
-                        sampler=sampler,
-                        num_workers=n_workers,
-                        pin_memory=True,
-                        drop_last=True)
+
+    sampler = torch.utils.data.distributed.DistributedSampler(ds)
+    dl = DataLoader(ds,
+                    batch_size=n_img_per_gpu,
+                    shuffle=False,
+                    sampler=sampler,
+                    num_workers=n_workers,
+                    pin_memory=True,
+                    drop_last=True)
 
     # model
     net = BiSeNet(n_classes=n_classes).to(device)
     net.train()
-    if not single_gpu:
-        net = nn.parallel.DistributedDataParallel(
-            net, device_ids=[args.local_rank], output_device=args.local_rank
-        )
+    net = nn.parallel.DistributedDataParallel(
+        net, device_ids=[args.local_rank], output_device=args.local_rank
+    )
     score_thres = 0.7
     n_min = n_img_per_gpu * cropsize[0] * cropsize[1]//16
     # define ignore label index for loss functions
@@ -174,7 +163,7 @@ def train():
             loss_avg = []
             st = ed
         # 只有 rank 0（或单卡）才保存和评估
-        if single_gpu or dist.get_rank() == 0:
+        if dist.get_rank() == 0:
             if (it+1) % 5000 == 0:
                 state = net.module.state_dict() if hasattr(net, 'module') else net.state_dict()
                 if dist.get_rank() == 0:
@@ -182,7 +171,7 @@ def train():
                 evaluate(dspth=data_root+'/test-img', cp='{}_iter.pth'.format(it))
 
     # 结束后单卡或 rank 0 保存最终模型
-    if single_gpu or dist.get_rank() == 0:
+    if  dist.get_rank() == 0:
         torch.save(net.state_dict(), osp.join(respth, 'model_final.pth'))
         logger.info('training done, model saved.')
 
