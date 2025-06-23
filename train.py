@@ -34,7 +34,7 @@ def parse_args():
             '--local_rank', '--local-rank',
             dest='local_rank',
             type=int,
-            default=-1,
+            default=os.environ.get('LOCAL_RANK', -1),
             )
     return parse.parse_args()
 
@@ -42,14 +42,11 @@ def parse_args():
 def train():
     args = parse_args()
     
-    # 如果 local_rank == -1，说明是单卡模式；否则为分布式多卡模式、
+     # 如果 local_rank == -1，说明是单卡模式；否则为分布式多卡模式、
     print('local_rank:', args.local_rank)
     torch.cuda.set_device(args.local_rank)
     torch.distributed.init_process_group(
-        backend='nccl',
-        init_method='tcp://127.0.0.1:33241',
-        world_size=torch.cuda.device_count(),
-        rank=args.local_rank
+        backend='nccl'
     )
     device = torch.device('cuda', args.local_rank)
 
